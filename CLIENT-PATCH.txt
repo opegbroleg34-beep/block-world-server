@@ -1,0 +1,26 @@
+BLOCK WORLD — ЧТО ЗАМЕНИТЬ В КЛИЕНТЕ ПОСЛЕ DEPLOY
+
+1. Render выдаст адрес примерно:
+https://block-world-server-XXXX.onrender.com
+
+2. В index.html замени старую функцию:
+
+async function api(path,body){const r=await fetch('/api/'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(10000)});const j=await r.json();if(!r.ok)throw Error(j.error||'Ошибка соединения');return j}
+
+на:
+
+const SERVER_URL='https://ТВОЙ-АДРЕС.onrender.com';
+async function api(path,body){const r=await fetch(SERVER_URL+'/api/'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(10000)});const j=await r.json();if(!r.ok)throw Error(j.error||'Ошибка соединения');return j}
+
+3. Замени выход игрока:
+
+navigator.sendBeacon('/api/leave',JSON.stringify({token:network.token}))
+
+на:
+
+navigator.sendBeacon(SERVER_URL+'/api/leave',JSON.stringify({token:network.token}))
+
+4. В Яндекс Играх добавь домен сервера в CSP / разрешённые хосты:
+block-world-server-XXXX.onrender.com
+
+Важно: указывай хост без https:// и без /api.

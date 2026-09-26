@@ -1,0 +1,8 @@
+services:
+  - type: web
+    name: block-world-server
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
