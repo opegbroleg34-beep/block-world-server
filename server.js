@@ -15,6 +15,9 @@ const BODY_LIMIT = 256 * 1024;
 const PLAYER_STALE_MS = 20_000;
 const ROOM_EXPIRE_MS = 24 * 60 * 60 * 1000;
 const DROP_EXPIRE_MS = 10 * 60 * 1000;
+const CHAT_MAX_LENGTH = 120;
+const CHAT_RATE_MS = 1200;
+const CHAT_KEEP = 50;
 
 const rooms = new Map();
 const tokenToRoom = new Map();
@@ -79,13 +82,17 @@ async function readJson(req) {
   catch { throw Object.assign(new Error('Некорректный JSON'), { status: 400 }); }
 }
 
-function makeRoom(mode) {
+function makeRoom(mode, title = '') {
   const code = roomCode();
   const room = {
     code,
+    title: cleanString(title, 30) || 'Открытый мир',
     state: Game.create(safeMode(mode)),
     members: {},
     players: new Map(),
+    chat: [],
+    chatSeq: 0,
+    chatLastAt: new Map(),
     createdAt: now(),
     updatedAt: now(),
   };
@@ -110,6 +117,40 @@ function activePlayers(room, exceptToken = null) {
     });
   }
   return out;
+}
+
+function activeCount(room) {
+  const t = now();
+  let n = 0;
+  for (const p of room.players.values()) if (t - p.lastSeen <= PLAYER_STALE_MS) n++;
+  return n;
+}
+
+function roomList() {
+  return [...rooms.values()]
+    .map(room => ({
+      code: room.code,
+      title: room.title || 'Открытый мир',
+      mode: room.state.mode,
+      players: activeCount(room),
+      maxPlayers: MAX_PLAYERS_PER_ROOM,
+      updatedAt: room.updatedAt,
+    }))
+    .filter(r => r.players > 0)
+    .sort((a, b) => b.players - a.players || b.updatedAt - a.updatedAt)
+    .slice(0, 50);
+}
+
+function chatAfter(room, since = 0) {
+  since = Number.isFinite(Number(since)) ? Number(since) : 0;
+  return (room.chat || []).filter(m => m.id > since).slice(-30);
+}
+
+function cleanChatText(value) {
+  let text = String(value ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
+  text = text.slice(0, CHAT_MAX_LENGTH);
+  if (/(?:https?:\/\/|www\.)/i.test(text)) throw new Error('Ссылки в чате отключены');
+  return text;
 }
 
 function findRoomByToken(token) {
@@ -209,6 +250,7 @@ function saveAll() {
   const serial = { version: 1, rooms: {} };
   for (const [code, room] of rooms) {
     serial.rooms[code] = {
+      title: room.title,
       state: room.state,
       members: room.members,
       createdAt: room.createdAt,
@@ -232,9 +274,13 @@ function loadAll() {
       if (!/^[A-F0-9]{12}$/.test(code)) continue;
       const room = {
         code,
+        title: cleanString(saved.title, 30) || 'Открытый мир',
         state: saved.state || Game.create('creative'),
         members: saved.members || {},
         players: new Map(),
+        chat: [],
+        chatSeq: 0,
+        chatLastAt: new Map(),
         createdAt: Number(saved.createdAt) || now(),
         updatedAt: Number(saved.updatedAt) || now(),
       };
@@ -265,10 +311,12 @@ setInterval(prune, 60_000).unref();
 
 async function handleJoin(req, res, body) {
   const create = !!body.create;
+  const requestedName = cleanString(body.name, 18) || 'Игрок';
   let room;
   if (create) {
     if (rooms.size >= MAX_ROOMS) return sendError(res, 503, 'Сейчас создано слишком много комнат');
-    room = makeRoom(body.mode);
+    const title = cleanString(body.serverName, 30) || ('Мир ' + requestedName);
+    room = makeRoom(body.mode, title);
   } else {
     const code = cleanString(body.room, 12).toUpperCase();
     if (!/^[A-F0-9]{12}$/.test(code)) return sendError(res, 400, 'Код комнаты должен состоять из 12 символов');
@@ -283,7 +331,7 @@ async function handleJoin(req, res, body) {
   if (!canResume && currentActive.length >= MAX_PLAYERS_PER_ROOM) return sendError(res, 409, 'Комната заполнена');
 
   const token = canResume ? resume : playerToken();
-  const name = cleanString(body.name, 18) || room.members[token]?.name || 'Игрок';
+  const name = requestedName || room.members[token]?.name || 'Игрок';
   room.members[token] = { ...(room.members[token] || {}), name };
   tokenToRoom.set(token, room.code);
   const p = ensurePlayer(room, token);
@@ -293,7 +341,7 @@ async function handleJoin(req, res, body) {
   Game.player(room.state, token, t);
   room.updatedAt = t;
   scheduleSave();
-  return sendJson(res, 200, gameSnapshot(room, token, 0));
+  return sendJson(res, 200, gameSnapshot(room, token, 0, { chat: (room.chat || []).slice(-20) }));
 }
 
 async function handleSync(req, res, body) {
@@ -314,7 +362,7 @@ async function handleSync(req, res, body) {
   cleanupDrops(room);
   room.updatedAt = t;
   scheduleSave();
-  return sendJson(res, 200, gameSnapshot(room, token, body.since));
+  return sendJson(res, 200, gameSnapshot(room, token, body.since, { chat: chatAfter(room, body.chatSince) }));
 }
 
 async function handleAction(req, res, body) {
@@ -337,6 +385,35 @@ async function handleAction(req, res, body) {
   room.updatedAt = now();
   scheduleSave();
   return sendJson(res, 200, gameSnapshot(room, token, body.since, result));
+}
+
+
+async function handleChat(req, res, body) {
+  const token = cleanString(body.token, 128);
+  const room = findRoomByToken(token);
+  if (!room) return sendError(res, 401, 'Сессия комнаты не найдена. Войди в комнату ещё раз');
+  const p = ensurePlayer(room, token);
+  p.lastSeen = now();
+  let text;
+  try { text = cleanChatText(body.text); }
+  catch (e) { return sendError(res, 400, e.message); }
+  if (!text) return sendError(res, 400, 'Сообщение пустое');
+
+  const t = now();
+  const last = room.chatLastAt.get(token) || 0;
+  if (t - last < CHAT_RATE_MS) return sendError(res, 429, 'Пиши чуть медленнее');
+  room.chatLastAt.set(token, t);
+
+  const message = {
+    id: ++room.chatSeq,
+    name: cleanString(p.name, 18) || 'Игрок',
+    text,
+    time: t,
+  };
+  room.chat.push(message);
+  if (room.chat.length > CHAT_KEEP) room.chat.splice(0, room.chat.length - CHAT_KEEP);
+  room.updatedAt = t;
+  return sendJson(res, 200, { ok: true, message });
 }
 
 async function handleLeave(req, res, body) {
@@ -363,6 +440,9 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(204, corsHeaders());
       return res.end();
     }
+    if (req.method === 'GET' && req.url === '/api/rooms') {
+      return sendJson(res, 200, { rooms: roomList(), time: now() });
+    }
     if (req.method === 'GET' && (req.url === '/' || req.url === '/health')) {
       return sendJson(res, 200, {
         ok: true,
@@ -377,6 +457,7 @@ const server = http.createServer(async (req, res) => {
     if (req.url === '/api/join') return handleJoin(req, res, body);
     if (req.url === '/api/sync') return handleSync(req, res, body);
     if (req.url === '/api/action') return handleAction(req, res, body);
+    if (req.url === '/api/chat') return handleChat(req, res, body);
     if (req.url === '/api/leave') return handleLeave(req, res, body);
     return sendError(res, 404, 'API-метод не найден');
   } catch (e) {
