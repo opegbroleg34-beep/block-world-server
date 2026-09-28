@@ -1,46 +1,30 @@
-# Block World multiplayer server 1.1
+# Block World multiplayer server — PvP + mobs
 
-Сервер для текущего клиента Block World с комнатами, браузером серверов и комнатным чатом.
+Node.js HTTP server for the Block World browser game.
 
-## API
-
-- `GET /api/rooms` — список активных серверов/комнат.
-- `POST /api/join` — создать сервер или войти по 12-значному коду.
-- `POST /api/sync` — позиции игроков, изменения мира и новые сообщения чата.
-- `POST /api/action` — блоки, двери, сундуки, крафт, предметы, здоровье и голод.
-- `POST /api/chat` — сообщение в чат текущей комнаты.
-- `POST /api/leave` — выход игрока.
-- `GET /health` — проверка сервера.
-
-## Новое в 1.1
-
-- В меню игры отображаются активные серверы.
-- Игрок может нажать «Подключиться» вместо ручного ввода кода.
-- При создании можно задать название сервера.
-- Чат работает только внутри текущей комнаты.
-- Сообщение — до 120 символов.
-- Ссылки в чате отключены.
-- Есть серверная задержка между сообщениями, чтобы уменьшить спам.
-- Сервер хранит только последние 50 сообщений комнаты в оперативной памяти; после перезапуска они исчезают.
-
-## Обновление существующего Render-сервера
-
-Если `block-world-server` уже работает на Render, достаточно заменить файлы в существующем GitHub-репозитории файлами из этого архива и сделать Commit. Render автоматически выполнит новый Deploy.
-
-После обновления проверь:
-
-`https://block-world-server-dsh2.onrender.com/health`
-
-и:
-
-`https://block-world-server-dsh2.onrender.com/api/rooms`
-
-Второй адрес должен вернуть JSON с полем `rooms`.
+Features:
+- rooms and room browser;
+- multiplayer synchronization;
+- chat;
+- shared blocks, doors, chests and drops;
+- PvP with fists / wooden sword / stone sword;
+- server-authoritative player damage;
+- synchronized mobs;
+- hostile mobs: zombie, skeleton, spider;
+- peaceful mobs: cow, sheep, pig.
 
 ## Render
+Build command:
 
-Build Command: `npm install`
+npm install
 
-Start Command: `npm start`
+Start command:
 
-Health Check Path: `/health`
+npm start
+
+Health check:
+
+/health
+
+## Important update
+When upgrading an existing server, replace both `server.js` and `game-rules.js`, then commit them to GitHub. Render should redeploy automatically.

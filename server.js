@@ -114,7 +114,19 @@ function activePlayers(room, exceptToken = null) {
       yaw: p.yaw, pitch: p.pitch,
       held: Game.equipped(bag, p.slot),
       crouch: !!p.crouch,
+      hp: bag.hp,
+      dead: !!bag.dead,
     });
+  }
+  return out;
+}
+
+function mobPlayers(room) {
+  const t = now();
+  const out = [];
+  for (const [token, p] of room.players) {
+    if (t - p.lastSeen > PLAYER_STALE_MS) continue;
+    out.push({ id: token, position: p.position, active: !!p.active });
   }
   return out;
 }
@@ -226,6 +238,7 @@ function gameSnapshot(room, token, since = 0, extra = {}) {
     bag,
     chests: room.state.chests || {},
     drops: room.state.drops || {},
+    mobs: Game.mobPublic(room.state),
     changes: changesSince(room, since),
     players: activePlayers(room, token),
     serverTime: now(),
@@ -359,6 +372,7 @@ async function handleSync(req, res, body) {
     }
   }
   Game.grow(room.state, t);
+  Game.mobTick(room.state, t, mobPlayers(room));
   cleanupDrops(room);
   room.updatedAt = t;
   scheduleSave();
@@ -376,8 +390,37 @@ async function handleAction(req, res, body) {
     const action = { ...body };
     delete action.token;
     delete action.since;
-    result = Game.run(room.state, token, action, now(), others) || {};
-    Game.grow(room.state, now());
+    const actionNow = now();
+    if (action.type === 'attackPlayer') {
+      const targetId = cleanString(action.targetId, 12);
+      const targetEntry = [...room.players.entries()].find(([otherToken, other]) =>
+        otherToken !== token && otherToken.slice(0, 12) === targetId && actionNow - other.lastSeen <= PLAYER_STALE_MS
+      );
+      if (!targetEntry) throw new Error('Игрок уже недоступен');
+      const [targetToken, targetPlayer] = targetEntry;
+      const attackerBag = Game.player(room.state, token, actionNow);
+      const targetBag = Game.player(room.state, targetToken, actionNow);
+      if (attackerBag.dead) throw new Error('Сначала возродись');
+      if (targetBag.dead) throw new Error('Игрок уже побеждён');
+      const dist = Math.hypot(
+        targetPlayer.position[0] - p.position[0],
+        targetPlayer.position[1] - p.position[1],
+        targetPlayer.position[2] - p.position[2]
+      );
+      if (dist > 3.35) throw new Error('Игрок слишком далеко');
+      const stats = Game.weaponStats(attackerBag, p.slot, room.state.mode);
+      if (!Game.canAttack(attackerBag, stats, actionNow)) throw new Error('Слишком быстро');
+      Game.markAttack(attackerBag, actionNow);
+      targetBag.hp = Math.max(0, targetBag.hp - stats.damage);
+      targetBag.dead = targetBag.hp <= 0;
+      targetBag.lastDamage = { at: actionNow, source: p.name || 'Игрок', damage: stats.damage };
+      room.state.rev++;
+      result = { hit: true, target: targetPlayer.name || 'Игрок', damage: stats.damage, killed: targetBag.dead };
+    } else {
+      result = Game.run(room.state, token, action, actionNow, others) || {};
+    }
+    Game.grow(room.state, actionNow);
+    Game.mobTick(room.state, actionNow, mobPlayers(room));
   } catch (e) {
     return sendError(res, 400, e.message || 'Действие отклонено сервером');
   }
