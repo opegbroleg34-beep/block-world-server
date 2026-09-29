@@ -1,30 +1,17 @@
-# Block World multiplayer server — PvP + mobs
+# Block World multiplayer server — Classic Expansion
 
-Node.js HTTP server for the Block World browser game.
+Node.js server for Block World.
 
-Features:
-- rooms and room browser;
-- multiplayer synchronization;
-- chat;
-- shared blocks, doors, chests and drops;
-- PvP with fists / wooden sword / stone sword;
-- server-authoritative player damage;
-- synchronized mobs;
-- hostile mobs: zombie, skeleton, spider;
-- peaceful mobs: cow, sheep, pig.
+Render settings:
+- Build: `npm install`
+- Start: `npm start`
+- Health check: `/health`
 
-## Render
-Build command:
+Required files in GitHub:
+- `server.js`
+- `game-rules.js`
+- `package.json`
+- `render.yaml`
 
-npm install
-
-Start command:
-
-npm start
-
-Health check:
-
-/health
-
-## Important update
-When upgrading an existing server, replace both `server.js` and `game-rules.js`, then commit them to GitHub. Render should redeploy automatically.
+The client is configured for:
+`https://block-world-server-dsh2.onrender.com`

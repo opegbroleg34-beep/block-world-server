@@ -116,6 +116,8 @@ function activePlayers(room, exceptToken = null) {
       crouch: !!p.crouch,
       hp: bag.hp,
       dead: !!bag.dead,
+      armor: bag.armor || [0,0,0,0],
+      offhand: bag.offhand || 0,
     });
   }
   return out;
@@ -126,7 +128,7 @@ function mobPlayers(room) {
   const out = [];
   for (const [token, p] of room.players) {
     if (t - p.lastSeen > PLAYER_STALE_MS) continue;
-    out.push({ id: token, position: p.position, active: !!p.active });
+    out.push({ id: token, position: p.position, active: !!p.active, yaw: p.yaw || 0, drive: Number(p.drive)||0 });
   }
   return out;
 }
@@ -212,10 +214,11 @@ function updatePlayerFromRequest(room, token, body) {
   if (Number.isInteger(body.slot)) p.slot = Math.max(0, Math.min(8, body.slot));
   if (body.crouch !== undefined) p.crouch = !!body.crouch;
   if (body.active !== undefined) p.active = !!body.active;
+  if (body.drive !== undefined) p.drive = clampNumber(body.drive, -1, 1, 0);
   p.lastSeen = now();
   room.members[token] = {
     name: p.name, position: p.position, yaw: p.yaw, pitch: p.pitch,
-    slot: p.slot, crouch: p.crouch,
+    slot: p.slot, crouch: p.crouch, drive: p.drive || 0,
   };
   return p;
 }
@@ -239,6 +242,11 @@ function gameSnapshot(room, token, since = 0, extra = {}) {
     chests: room.state.chests || {},
     drops: room.state.drops || {},
     mobs: Game.mobPublic(room.state),
+    arrows: Game.arrowPublic(room.state),
+    carts: Game.cartPublic ? Game.cartPublic(room.state) : {},
+    furnaces: Game.furnacePublic ? Game.furnacePublic(room.state) : {},
+    ridePos: bag.ridingCart && room.state.carts?.[bag.ridingCart] ? [room.state.carts[bag.ridingCart].x, room.state.carts[bag.ridingCart].y + 1.5, room.state.carts[bag.ridingCart].z] : null,
+    time: Game.timeInfo(room.state, now()),
     changes: changesSince(room, since),
     players: activePlayers(room, token),
     serverTime: now(),
@@ -365,7 +373,7 @@ async function handleSync(req, res, body) {
   const t = now();
   if (t - p.lastTickRun >= 900) {
     try {
-      Game.run(room.state, token, { type: 'tick', active: !!body.active }, t, []);
+      Game.run(room.state, token, { type: 'tick', active: !!body.active, position: p.position }, t, []);
       p.lastTickRun = t;
     } catch (e) {
       return sendError(res, 400, e.message || 'Ошибка состояния игрока');
@@ -373,6 +381,8 @@ async function handleSync(req, res, body) {
   }
   Game.grow(room.state, t);
   Game.mobTick(room.state, t, mobPlayers(room));
+  Game.projectileTick(room.state, t, mobPlayers(room));
+  if (Game.vehicleTick) Game.vehicleTick(room.state, t, mobPlayers(room));
   cleanupDrops(room);
   room.updatedAt = t;
   scheduleSave();
@@ -389,6 +399,7 @@ async function handleAction(req, res, body) {
   try {
     const action = { ...body };
     delete action.token;
+    if (action.type === 'shootBow') action.ownerName = p.name || 'Игрок';
     delete action.since;
     const actionNow = now();
     if (action.type === 'attackPlayer') {
@@ -411,16 +422,17 @@ async function handleAction(req, res, body) {
       const stats = Game.weaponStats(attackerBag, p.slot, room.state.mode);
       if (!Game.canAttack(attackerBag, stats, actionNow)) throw new Error('Слишком быстро');
       Game.markAttack(attackerBag, actionNow);
-      targetBag.hp = Math.max(0, targetBag.hp - stats.damage);
-      targetBag.dead = targetBag.hp <= 0;
-      targetBag.lastDamage = { at: actionNow, source: p.name || 'Игрок', damage: stats.damage };
+      const dealt = Game.applyDamage ? Game.applyDamage(targetBag, stats.damage, p.name || 'Игрок', actionNow) : stats.damage;
+      if (!Game.applyDamage) { targetBag.hp = Math.max(0, targetBag.hp - stats.damage); targetBag.dead = targetBag.hp <= 0; targetBag.lastDamage = { at: actionNow, source: p.name || 'Игрок', damage: stats.damage }; }
       room.state.rev++;
-      result = { hit: true, target: targetPlayer.name || 'Игрок', damage: stats.damage, killed: targetBag.dead };
+      result = { hit: true, target: targetPlayer.name || 'Игрок', damage: Math.round(dealt*10)/10, killed: targetBag.dead };
     } else {
       result = Game.run(room.state, token, action, actionNow, others) || {};
     }
     Game.grow(room.state, actionNow);
     Game.mobTick(room.state, actionNow, mobPlayers(room));
+    Game.projectileTick(room.state, actionNow, mobPlayers(room));
+    if (Game.vehicleTick) Game.vehicleTick(room.state, actionNow, mobPlayers(room));
   } catch (e) {
     return sendError(res, 400, e.message || 'Действие отклонено сервером');
   }
@@ -467,7 +479,7 @@ async function handleLeave(req, res, body) {
     if (p) {
       room.members[token] = {
         name: p.name, position: p.position, yaw: p.yaw, pitch: p.pitch,
-        slot: p.slot, crouch: p.crouch,
+        slot: p.slot, crouch: p.crouch, drive: p.drive || 0,
       };
       room.players.delete(token);
     }
