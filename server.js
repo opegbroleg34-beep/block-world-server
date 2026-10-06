@@ -359,7 +359,14 @@ async function handleJoin(req, res, body) {
   p.name = name;
   p.lastSeen = t;
   p.active = false;
-  Game.player(room.state, token, t);
+  const joinedBag = Game.player(room.state, token, t);
+  if (create && room.state.mode === 'creative' && !canResume) {
+    joinedBag.items = {};
+    joinedBag.slots = Array(36).fill(0);
+    joinedBag.armor = [0, 0, 0, 0];
+    joinedBag.offhand = 0;
+    joinedBag.ridingCart = null;
+  }
   room.updatedAt = t;
   scheduleSave();
   return sendJson(res, 200, gameSnapshot(room, token, 0, { chat: (room.chat || []).slice(-20) }));
@@ -494,6 +501,9 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'OPTIONS') {
       res.writeHead(204, corsHeaders());
       return res.end();
+    }
+    if (req.method === 'GET' && req.url.startsWith('/ping')) {
+      return sendJson(res, 200, { ok: true, t: now() });
     }
     if (req.method === 'GET' && req.url === '/api/rooms') {
       return sendJson(res, 200, { rooms: roomList(), time: now() });
